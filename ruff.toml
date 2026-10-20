@@ -1,0 +1,11 @@
+line-length = 130
+target-version = "py312"
+extend-exclude = ["demo-states", ".venv", "venv"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# Keep datetime.timezone.utc: the demo profiles run the same code on Python 3.8.
+ignore = ["UP017"]
+
+[lint.isort]
+known-first-party = ["app", "health_check", "remediate_agent", "secret_scan"]

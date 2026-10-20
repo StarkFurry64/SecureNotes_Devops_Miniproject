@@ -1,0 +1,340 @@
+name: SecureNotes DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_remediate:
+        description: "Run the AI remediation agent even if both gates pass"
+        type: boolean
+        default: false
+
+# Least privilege by default; the remediate job asks for more on its own.
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  LOCAL_IMAGE: sample-app:latest
+  # Trivy is run from its official image, pinned to a release that was verified safe after
+  # the March 2026 trivy-action tag hijack (CVE-2026-33634). Pin by digest for production.
+  TRIVY_IMAGE: aquasec/trivy:0.69.3
+
+jobs:
+  # ---------------------------------------------------------------- Stage 1
+  code-quality:
+    name: "Stage 1: Code quality & secret scan"
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: https://sonarcloud.io
+    steps:
+      - name: Checkout (full history for SonarCloud blame / new-code detection)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff==0.16.10
+          ruff check --output-format github .
+
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest tests --junitxml=test-results.xml
+          coverage xml
+          coverage report
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            test-results.xml
+            coverage.xml
+          retention-days: 7
+
+      - name: Local secret scan
+        id: secretscan
+        run: |
+          if python scripts/secret_scan.py --output secret-findings.json; then
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload secret-scan findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-findings
+          path: secret-findings.json
+          retention-days: 7
+
+      - name: SonarCloud scan (SAST, secrets, code smells)
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v6
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'Siddhantshukla1657_SecureNotes_Devops_Miniproject' }}
+            -Dsonar.organization=${{ secrets.SONAR_ORG || 'siddhantshukla1657' }}
+
+      - name: SonarCloud quality gate
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
+        timeout-minutes: 5
+        with:
+          scanMetadataReportFile: .scannerwork/report-task.txt
+
+      - name: Note when SonarCloud is not configured
+        if: env.SONAR_TOKEN == ''
+        run: echo "::warning title=SonarCloud skipped::SONAR_TOKEN is not set; only the local secret scan gated this stage."
+
+      - name: Enforce secret-scan gate
+        if: steps.secretscan.outputs.failed == 'true'
+        run: |
+          echo "::error title=Hardcoded secret::The secret scan found hardcoded credentials. See the secret-findings artifact."
+          exit 1
+
+  # ---------------------------------------------------------------- Stage 2
+  build-and-scan:
+    name: "Stage 2: Container build & vulnerability scan"
+    needs: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image under test
+        run: docker buildx build --load -t "$LOCAL_IMAGE" .
+
+      - name: Trivy scan (JSON report for the remediation agent)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/out \
+            "$TRIVY_IMAGE" image \
+              --format json --output /out/trivy-results.json \
+              --severity CRITICAL,HIGH --ignore-unfixed \
+              --pkg-types os,library \
+              --exit-code 0 \
+              "$LOCAL_IMAGE"
+
+      # Uploaded before the gate is evaluated so Stage 4 can still download it when the gate fails.
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: trivy-results.json
+          retention-days: 7
+
+      - name: Trivy gate (fail on fixable HIGH/CRITICAL)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image \
+              --format table \
+              --severity CRITICAL,HIGH --ignore-unfixed \
+              --pkg-types os,library \
+              --exit-code 1 \
+              "$LOCAL_IMAGE"
+
+      - name: Set up Python for the smoke test
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Container smoke test (start image, probe /health)
+        run: |
+          pip install requests
+          docker run -d --name smoke -p 5000:5000 -e APP_SECRET_KEY=ci-smoke-test "$LOCAL_IMAGE"
+          python monitor/health_check.py --url http://localhost:5000/health --retries 10 --retry-delay 2 \
+            --history "$RUNNER_TEMP/smoke-history.csv"
+          curl -fsS http://localhost:5000/ | grep -q SecureNotes
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs smoke || true
+
+  # ---------------------------------------------------------------- Stage 3
+  publish:
+    name: "Stage 3: Publish to Docker Hub"
+    needs: build-and-scan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+      image: ${{ steps.push.outputs.image }}
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Skip notice
+        if: env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == ''
+        run: echo "::warning title=Publish skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set."
+
+      - name: Set up Docker Buildx
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (latest + commit SHA)
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/securenotes:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/securenotes:${{ github.sha }}
+
+      - name: Record result
+        id: push
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+            echo "image=$DOCKERHUB_USERNAME/securenotes:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "### 📦 Published \`$DOCKERHUB_USERNAME/securenotes:$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------- Deploy & verify
+  deploy:
+    name: "Deploy & verify health"
+    needs: publish
+    if: needs.publish.outputs.pushed == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+      MONITOR_URL: ${{ vars.MONITOR_URL }}
+      IMAGE: ${{ needs.publish.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install monitor dependencies
+        run: pip install requests
+
+      # Option A: a cloud host (e.g. Render) that redeploys the Docker Hub image from a deploy hook.
+      - name: Trigger cloud deployment
+        if: env.DEPLOY_HOOK_URL != '' && env.MONITOR_URL != ''
+        run: |
+          curl -fsS -X POST "$DEPLOY_HOOK_URL" > /dev/null
+          echo "Deployment triggered; waiting for $MONITOR_URL to report healthy..."
+          python monitor/health_check.py --url "$MONITOR_URL" --timeout 15 --fail-ms 5000 \
+            --retries 30 --retry-delay 10 --history "$RUNNER_TEMP/deploy-history.csv"
+
+      # Option B (default): deploy the published image to a staging container on the runner.
+      - name: Deploy published image to staging container
+        if: env.DEPLOY_HOOK_URL == '' || env.MONITOR_URL == ''
+        run: |
+          docker pull "$IMAGE"
+          docker run -d --name securenotes-staging -p 5000:5000 \
+            -e APP_SECRET_KEY="${{ github.run_id }}-staging" "$IMAGE"
+          python monitor/health_check.py --url http://localhost:5000/health \
+            --retries 10 --retry-delay 2 --history "$RUNNER_TEMP/deploy-history.csv"
+          echo "### 🚀 Deployed \`$IMAGE\` to staging and verified \`/health\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Staging logs on failure
+        if: failure()
+        run: docker logs securenotes-staging || true
+
+  # ---------------------------------------------------------------- Stage 4
+  remediate:
+    name: "Stage 4: AI remediation"
+    needs: [code-quality, build-and-scan]
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      (needs.code-quality.result == 'failure' ||
+       needs.build-and-scan.result == 'failure' ||
+       inputs.force_remediate == true)
+    runs-on: ubuntu-latest
+    # Enough to push a branch and open a PR - nothing more. Branch protection on main
+    # (required review + status checks) stops the bot from merging its own change.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install agent dependencies
+        run: pip install requests python-dotenv
+
+      - name: Download secret-scan findings
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: secret-findings
+
+      - name: Download Trivy report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: trivy-scan-results
+
+      - name: Choose agent mode from the failed gate
+        id: mode
+        run: |
+          if [ "${{ needs.code-quality.result }}" = "failure" ]; then
+            echo "mode=secret" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.build-and-scan.result }}" = "failure" ]; then
+            echo "mode=image" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run remediation agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_MODEL: ${{ secrets.NVIDIA_MODEL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python scripts/remediate_agent.py \
+            --mode "${{ steps.mode.outputs.mode }}" \
+            --trivy-report trivy-results.json \
+            --secret-report secret-findings.json

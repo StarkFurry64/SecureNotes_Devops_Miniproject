@@ -1,0 +1,62 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+
+# --- Secrets and local configuration --------------------------------------
+# Real values live in .env (local) or GitHub / Azure secrets, never in git.
+.env
+.env.*
+!.env.example
+
+# --- Test and coverage output ---------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+test-results.xml
+
+# --- Pipeline / scanner output --------------------------------------------
+.scannerwork/
+trivy-results.json
+secret-findings.json
+findings.json
+
+# --- Health monitor history -----------------------------------------------
+monitor/history.csv
+monitor/history/
+
+# --- Terraform (Azure infrastructure) -------------------------------------
+# State files can contain secrets; tfvars hold personal values such as alert emails.
+# .terraform.lock.hcl is intentionally NOT ignored: it pins provider versions.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Azure CLI / tooling --------------------------------------------------
+.azure/
+
+# --- OS and editors -------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.log

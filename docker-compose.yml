@@ -1,0 +1,33 @@
+# Local deployment: the app plus a monitor that probes it every 10 seconds.
+#   docker compose up --build -d
+#   docker compose logs -f monitor          # watch the health checks
+#   docker compose stop securenotes          # simulate an outage -> UNHEALTHY + alert
+#   docker compose start securenotes         # recovery -> HEALTHY + recovery alert
+services:
+  securenotes:
+    build: .
+    image: securenotes:local
+    container_name: securenotes
+    ports:
+      - "${FLASK_PORT:-5000}:5000"
+    environment:
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-change-me}
+    restart: unless-stopped
+
+  monitor:
+    image: python:3.12-slim
+    container_name: securenotes-monitor
+    working_dir: /monitor
+    volumes:
+      - ./monitor:/monitor
+    environment:
+      MONITOR_URL: http://securenotes:5000/health
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      MONITOR_HISTORY: /monitor/history/history.csv
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "pip install --quiet --no-cache-dir requests==2.32.3 &&
+             python health_check.py --interval 10 --retries 1 --retry-delay 1 --timeout 3"
+    depends_on:
+      - securenotes
+    restart: unless-stopped

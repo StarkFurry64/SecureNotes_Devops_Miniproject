@@ -1,0 +1,123 @@
+name: Scheduled Health Monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may delay scheduled runs under load)
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Health URL to check (blank = MONITOR_URL variable, or a staging container)"
+        required: false
+        default: ""
+      simulate_outage:
+        description: "Stop the staging container before checking, to demonstrate failure detection"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: health-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check SecureNotes health
+    runs-on: ubuntu-latest
+    env:
+      TARGET_URL: ${{ inputs.url || vars.MONITOR_URL }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+      HISTORY: monitor/history/history.csv
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install monitor dependencies
+        run: pip install requests
+
+      # Without a public deployment, start the latest image on the runner so the schedule
+      # still demonstrates the check. Set the MONITOR_URL repository variable to watch a real host.
+      - name: Start staging container (no MONITOR_URL configured)
+        if: env.TARGET_URL == ''
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && docker pull "$DOCKERHUB_USERNAME/securenotes:latest"; then
+            IMAGE="$DOCKERHUB_USERNAME/securenotes:latest"
+          else
+            docker build -t securenotes:monitor .
+            IMAGE=securenotes:monitor
+          fi
+          docker run -d --name securenotes -p 5000:5000 -e APP_SECRET_KEY=monitor "$IMAGE"
+          for i in $(seq 1 20); do curl -fs http://localhost:5000/health > /dev/null && break; sleep 1; done
+          echo "TARGET_URL=http://localhost:5000/health" >> "$GITHUB_ENV"
+
+      - name: Simulate outage
+        if: inputs.simulate_outage
+        run: docker stop securenotes || true
+
+      - name: Restore health history
+        uses: actions/cache/restore@v4
+        with:
+          path: monitor/history
+          key: health-history-${{ github.run_id }}
+          restore-keys: health-history-
+
+      - name: Run health check
+        id: check
+        run: |
+          set +e
+          python monitor/health_check.py --url "$TARGET_URL" --history "$HISTORY" --timeout 10 --fail-ms 3000
+          code=$?
+          echo "healthy=$([ $code -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo
+          python monitor/health_check.py --report --history "$HISTORY"
+          exit 0
+
+      - name: Save health history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: monitor/history
+          key: health-history-${{ github.run_id }}
+
+      - name: Upload health history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-history
+          path: monitor/history/history.csv
+          retention-days: 30
+
+      # GitHub issues act as an incident log: one open issue per outage, closed on recovery.
+      - name: Open or update incident issue
+        if: steps.check.outputs.healthy == 'false'
+        run: |
+          gh label create health-alert --color B60205 --description "Automated API health alert" 2>/dev/null || true
+          body="Health check failed at $(date -u +%FT%TZ) for \`$TARGET_URL\`. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          issue=$(gh issue list --label health-alert --state open --json number --jq '.[0].number')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "🚨 SecureNotes is UNHEALTHY" --label health-alert --body "$body"
+          fi
+
+      - name: Close incident issue on recovery
+        if: steps.check.outputs.healthy == 'true'
+        run: |
+          for issue in $(gh issue list --label health-alert --state open --json number --jq '.[].number'); do
+            gh issue close "$issue" --comment "✅ Recovered at $(date -u +%FT%TZ): $TARGET_URL is healthy again."
+          done
+
+      - name: Fail the run when unhealthy
+        if: steps.check.outputs.healthy == 'false'
+        run: |
+          echo "::error title=API unhealthy::$TARGET_URL failed its health check."
+          exit 1
