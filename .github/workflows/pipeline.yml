@@ -31,18 +31,18 @@ jobs:
   # ---------------------------------------------------------------- Stage 1
   code-quality:
     name: "Stage 1: Code quality & secret scan"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       SONAR_HOST_URL: https://sonarcloud.io
     steps:
       - name: Checkout (full history for SonarCloud blame / new-code detection)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload test and coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
@@ -82,7 +82,7 @@ jobs:
 
       - name: Upload secret-scan findings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: secret-findings
           path: secret-findings.json
@@ -90,7 +90,7 @@ jobs:
 
       - name: SonarCloud scan (SAST, secrets, code smells)
         if: env.SONAR_TOKEN != ''
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         with:
           args: >
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'Siddhantshukla1657_SecureNotes_Devops_Miniproject' }}
@@ -117,13 +117,13 @@ jobs:
   build-and-scan:
     name: "Stage 2: Container build & vulnerability scan"
     needs: code-quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build image under test
         run: docker buildx build --load -t "$LOCAL_IMAGE" .
@@ -142,7 +142,7 @@ jobs:
 
       # Uploaded before the gate is evaluated so Stage 4 can still download it when the gate fails.
       - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-scan-results
           path: trivy-results.json
@@ -160,7 +160,7 @@ jobs:
               "$LOCAL_IMAGE"
 
       - name: Set up Python for the smoke test
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -181,7 +181,7 @@ jobs:
     name: "Stage 3: Publish to Docker Hub"
     needs: build-and-scan
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       pushed: ${{ steps.push.outputs.pushed }}
       image: ${{ steps.push.outputs.image }}
@@ -190,7 +190,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Skip notice
         if: env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == ''
@@ -198,18 +198,18 @@ jobs:
 
       - name: Set up Docker Buildx
         if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push (latest + commit SHA)
         if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -233,7 +233,7 @@ jobs:
     name: "Deploy & verify health"
     needs: publish
     if: needs.publish.outputs.pushed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     env:
       DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
@@ -241,10 +241,10 @@ jobs:
       IMAGE: ${{ needs.publish.outputs.image }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -284,7 +284,7 @@ jobs:
       (needs.code-quality.result == 'failure' ||
        needs.build-and-scan.result == 'failure' ||
        inputs.force_remediate == true)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Enough to push a branch and open a PR - nothing more. Branch protection on main
     # (required review + status checks) stops the bot from merging its own change.
     permissions:
@@ -292,10 +292,10 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -303,13 +303,13 @@ jobs:
         run: pip install requests python-dotenv
 
       - name: Download secret-scan findings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: secret-findings
 
       - name: Download Trivy report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: trivy-scan-results

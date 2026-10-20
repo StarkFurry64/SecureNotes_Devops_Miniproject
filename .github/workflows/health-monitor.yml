@@ -25,7 +25,7 @@ concurrency:
 jobs:
   monitor:
     name: Check SecureNotes health
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       TARGET_URL: ${{ inputs.url || vars.MONITOR_URL }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -34,10 +34,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -64,7 +64,7 @@ jobs:
         run: docker stop securenotes || true
 
       - name: Restore health history
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: monitor/history
           key: health-history-${{ github.run_id }}
@@ -83,14 +83,14 @@ jobs:
 
       - name: Save health history
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: monitor/history
           key: health-history-${{ github.run_id }}
 
       - name: Upload health history
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: health-history
           path: monitor/history/history.csv
