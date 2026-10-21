@@ -1,9 +1,7 @@
-FROM python:3.12-slim
+# DEMO DEFECT: outdated, full-size base image with many known HIGH/CRITICAL CVEs.
+FROM python:3.8
 
 WORKDIR /app
-
-# Apply current Debian security patches so Trivy's fixable HIGH/CRITICAL list stays empty.
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
