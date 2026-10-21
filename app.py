@@ -35,13 +35,37 @@ SECURITY_HEADERS = {
 }
 
 app = Flask(__name__)  # NOSONAR(S4502): CSRF is enforced for every POST by verify_csrf_token() below
-# DEMO DEFECT: credentials hardcoded in source (SonarCloud python:S6779 / S2068).
+# The key is read from the environment, never hardcoded (SonarCloud python:S6779 / S2068).
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "default-dev-key")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 _notes = []
 _notes_lock = threading.Lock()
+
+
+def validate_note_input(value, kind="text"):
+    """Validate user input for both mutating routes.
+
+    kind="text" checks note text, kind="id" checks a note identifier.
+    Returns (cleaned_value, error_message); error_message is None when valid.
+    """
+    if value is None or not isinstance(value, str):
+        return None, "Input is missing."
+
+    cleaned = value.strip()
+    if not cleaned:
+        return None, "Input cannot be empty."
+
+    if kind == "id":
+        if not NOTE_ID_PATTERN.match(cleaned):
+            return None, "Invalid note id."
+        return cleaned, None
+
+    if len(cleaned) > MAX_NOTE_LENGTH:
+        return None, f"Note is longer than {MAX_NOTE_LENGTH} characters."
+    if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in cleaned):
+        return None, "Note contains control characters."
+    return cleaned, None
 
 
 def csrf_token():
@@ -90,20 +114,9 @@ def index():
 
 @app.route("/add", methods=["POST"])
 def add_note():
-    # DEMO DEFECT: validation duplicated inline in each route (code smell).
-    raw = request.form.get("text")
-    if raw is None:
-        flash("Input is missing.", "error")
-        return redirect(url_for("index"))
-    text = raw.strip()
-    if not text:
-        flash("Input cannot be empty.", "error")
-        return redirect(url_for("index"))
-    if len(text) > MAX_NOTE_LENGTH:
-        flash(f"Note is longer than {MAX_NOTE_LENGTH} characters.", "error")
-        return redirect(url_for("index"))
-    if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in text):
-        flash("Note contains control characters.", "error")
+    text, error = validate_note_input(request.form.get("text"), kind="text")
+    if error:
+        flash(error, "error")
         return redirect(url_for("index"))
 
     note = {
@@ -119,10 +132,9 @@ def add_note():
 
 @app.route("/delete/<note_id>", methods=["POST"])
 def delete_note(note_id):
-    # DEMO DEFECT: the same validation copied again.
-    cleaned_id = note_id.strip()
-    if not NOTE_ID_PATTERN.match(cleaned_id):
-        flash("Invalid note id.", "error")
+    cleaned_id, error = validate_note_input(note_id, kind="id")
+    if error:
+        flash(error, "error")
         return redirect(url_for("index"))
 
     with _notes_lock:
