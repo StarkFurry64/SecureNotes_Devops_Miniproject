@@ -79,8 +79,9 @@ and removed with `terraform destroy`; nothing is configured by hand in the porta
 
 **Keyless deployment.** The deploy job runs in the GitHub `production` environment and requests an
 OpenID Connect token from GitHub. Azure accepts the token only for the subject
-`repo:StarkFurry64/SecureNotes_Devops_Miniproject:environment:production` and exchanges it for a
-short-lived credential of the managed identity. That identity holds the Contributor role on this one
+`repo:StarkFurry64@156516194/SecureNotes_Devops_Miniproject@1427944179:environment:production`
+(GitHub puts the immutable owner and repository IDs in the subject, so a re-created repository with the same
+name cannot deploy) and exchanges it for a short-lived credential of the managed identity. That identity holds the Contributor role on this one
 resource group and nothing else. No Azure password or key is stored in GitHub.
 
 **Release flow.** After Stage 3 publishes `tanish15/securenotes:<commit SHA>`, the deploy job runs
