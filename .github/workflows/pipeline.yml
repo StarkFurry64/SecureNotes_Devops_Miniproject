@@ -93,7 +93,7 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v8
         with:
           args: >
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'StarkFurry64_SecureNotes_Devops_Miniproject' }}
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'StarkFurry64_SecureNotes_Devops_Miniproject2' }}
             -Dsonar.organization=${{ secrets.SONAR_ORG || 'starkfurry64-1' }}
 
       - name: SonarCloud quality gate
