@@ -8,12 +8,11 @@ resource "azurerm_user_assigned_identity" "github_deploy" {
 }
 
 resource "azurerm_federated_identity_credential" "github_production" {
-  name                = "github-production"
-  resource_group_name = azurerm_resource_group.rg.name
-  parent_id           = azurerm_user_assigned_identity.github_deploy.id
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = "https://token.actions.githubusercontent.com"
-  subject             = "repo:${var.github_repository}:environment:production"
+  name      = "github-production"
+  parent_id = azurerm_user_assigned_identity.github_deploy.id
+  audience  = ["api://AzureADTokenExchange"]
+  issuer    = "https://token.actions.githubusercontent.com"
+  subject   = "repo:${var.github_repository}:environment:production"
 }
 
 # Least privilege: the identity can change resources in this one resource group only.

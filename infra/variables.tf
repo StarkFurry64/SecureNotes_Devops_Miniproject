@@ -41,9 +41,12 @@ variable "alert_emails" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository (owner/name) allowed to deploy through OIDC."
+  description = <<-EOT
+    Repository part of the GitHub OIDC subject. GitHub includes the immutable owner and repository IDs
+    (owner@id/repo@id), so a deleted-and-recreated repository with the same name cannot deploy.
+  EOT
   type        = string
-  default     = "StarkFurry64/SecureNotes_Devops_Miniproject"
+  default     = "StarkFurry64@156516194/SecureNotes_Devops_Miniproject@1427944179"
 }
 
 variable "budget_amount" {
