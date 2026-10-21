@@ -20,7 +20,8 @@ resource "azurerm_application_insights_standard_web_test" "health" {
     ssl_check_enabled    = true
 
     content {
-      content_match = "healthy"
+      content_match      = "healthy"
+      pass_if_text_found = true # Azure's default (false) would fail the test when the text IS found
     }
   }
 
