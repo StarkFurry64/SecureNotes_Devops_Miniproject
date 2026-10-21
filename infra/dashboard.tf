@@ -9,7 +9,7 @@ locals {
   panels = [
     {
       title = "Requests per minute"
-      query = "requests | where timestamp > ${local.window} | summarize Requests = count() by bin(timestamp, 1m) | render timechart"
+      query = "requests | where timestamp > ${local.window} | summarize Requests = sum(itemCount) by bin(timestamp, 1m) | render timechart"
       chart = "timechart"
     },
     {
@@ -19,7 +19,7 @@ locals {
     },
     {
       title = "Failed requests by status code"
-      query = "requests | where timestamp > ${local.window} and success == false | summarize Failed = count() by bin(timestamp, 1m), resultCode | render timechart"
+      query = "requests | where timestamp > ${local.window} and success == false | summarize Failed = sum(itemCount) by bin(timestamp, 1m), resultCode | render timechart"
       chart = "timechart"
     },
     {
@@ -34,7 +34,7 @@ locals {
     },
     {
       title = "Last hour at a glance"
-      query = "requests | where timestamp > ${local.window} | summarize Requests = count(), Failed = countif(success == false), ['Avg ms'] = round(avg(duration), 1), ['P95 ms'] = round(percentile(duration, 95), 1)"
+      query = "requests | where timestamp > ${local.window} | summarize Requests = sum(itemCount), Failed = sumif(itemCount, success == false), ['Avg ms'] = round(avg(duration), 1), ['P95 ms'] = round(percentile(duration, 95), 1)"
       chart = "table"
     },
   ]

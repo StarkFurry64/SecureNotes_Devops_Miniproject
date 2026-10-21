@@ -35,6 +35,12 @@ resource "azurerm_container_app_environment" "env" {
   location                   = azurerm_resource_group.rg.location
   resource_group_name        = azurerm_resource_group.rg.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.logs.id
+
+  # Serverless "Consumption" plan: pay per second of use, free monthly allowance.
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "random_password" "app_secret" {
@@ -47,6 +53,7 @@ resource "azurerm_container_app" "app" {
   container_app_environment_id = azurerm_container_app_environment.env.id
   resource_group_name          = azurerm_resource_group.rg.name
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
 
   secret {
     name  = "app-secret-key"
@@ -104,6 +111,17 @@ resource "azurerm_container_app" "app" {
       env {
         name  = "OTEL_SERVICE_NAME"
         value = var.app_name
+      }
+
+      # Record every request (the library's default keeps only ~5 per second). Traffic is tiny.
+      env {
+        name  = "OTEL_TRACES_SAMPLER"
+        value = "microsoft.fixed_percentage"
+      }
+
+      env {
+        name  = "OTEL_TRACES_SAMPLER_ARG"
+        value = "1.0"
       }
 
       # Self-healing: Azure restarts the container if /health stops answering.

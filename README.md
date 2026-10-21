@@ -11,10 +11,13 @@ A small Flask notes app wrapped in a secure delivery pipeline:
                 ▼                                                          │
             Stage 3: push to Docker Hub (latest + SHA)                     │ developer reviews & merges
                 ▼                                                          ▼
-            Deploy & verify /health ◀──────────────── new pipeline run ◀───┘
+            Deploy to Azure Container Apps (OIDC) + verify live /health ◀── new run ◀┘
                 ▼
-            Scheduled health monitor (every 15 min) ─▶ incident issue + webhook alert
+            Azure Monitor: Application Insights dashboard, Live Metrics,
+            availability test, email alerts  (+ scheduled GitHub health monitor)
 ```
+
+**Live app:** https://securenotes.calmhill-acbabd67.centralindia.azurecontainerapps.io
 
 ## DevOps practices covered
 
@@ -22,15 +25,16 @@ A small Flask notes app wrapped in a secure delivery pipeline:
 |---|---|
 | Version control | Git + GitHub, branch protection, PR-based fixes |
 | Build | `requirements.txt`, `Dockerfile`, `docker buildx` in Stage 2 |
-| Automated testing | `tests/` – 68 pytest cases, 97% coverage uploaded to SonarCloud |
+| Automated testing | `tests/` – 77 pytest cases, 98% coverage uploaded to SonarCloud |
 | Linting / SAST | ruff lint, SonarCloud scan + quality gate, `scripts/secret_scan.py` |
 | Application security | CSRF tokens on every form, security headers (CSP, X-Frame-Options, nosniff) |
 | Containerisation | `Dockerfile` (slim base, non-root user, HEALTHCHECK), `docker-compose.yml` |
 | Container security | Trivy gate on fixable HIGH/CRITICAL CVEs |
 | CI/CD | `.github/workflows/pipeline.yml` (4 gated stages + deploy) |
 | Continuous delivery | Docker Hub publish tagged `latest` and commit SHA |
-| Deployment | `deploy` job: cloud deploy hook (e.g. Render) or staging container, verified by health check |
-| Monitoring & alerting | `monitor/health_check.py`, `.github/workflows/health-monitor.yml`, GitHub issues + Discord/Slack webhook |
+| Deployment | `deploy` job: rolls the image out to **Azure Container Apps** (OIDC login, no stored password) and verifies the live `/health` |
+| Infrastructure as Code | `infra/` – Terraform creates every Azure resource (16), `terraform destroy` removes them |
+| Monitoring & alerting | Azure Application Insights (requests, response time, failures, Live Metrics, `notes_created` metric), workbook dashboard, availability test from 2 regions, email alerts; plus `monitor/health_check.py` and the scheduled GitHub monitor |
 | Automation / AIOps | `scripts/remediate_agent.py` opens fix PRs for failed gates |
 
 ## Repository layout
@@ -53,7 +57,9 @@ monitor/health_check.py        4-check API health monitor with history & alerts
 tests/                         app, monitor and security-tooling tests
 templates/, static/            UI
 demo-states/                   vulnerable, fixed, agent-secret-only, agent-image-only
-docs/PROJECT_REPORT.md         report sections for the agent, tests, monitoring, threat model
+infra/                         Terraform: Azure Container Apps, Application Insights, alerts, dashboard, OIDC
+scripts/load_test.py           traffic generator for the live dashboard demo
+docs/PROJECT_REPORT.md         report sections for the agent, tests, monitoring, Azure, threat model
 ```
 
 ## Run locally
@@ -105,7 +111,7 @@ docker compose logs -f monitor
    | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | Stage 3 publish (token: Docker Hub → Account settings → Personal access tokens, read/write) |
    | `NVIDIA_API_KEY` | Stage 4 model calls (free key at build.nvidia.com). Without it the agent uses its rule-based fallback. |
    | `NVIDIA_MODEL` | optional, default `nvidia/llama-3.1-nemotron-70b-instruct` |
-   | `DEPLOY_HOOK_URL` | optional cloud deployment hook (e.g. Render "Deploy Hook") |
+   | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Deploy to Azure (IDs printed by `terraform output github_secrets`; not passwords) |
    | `ALERT_WEBHOOK_URL` | optional Discord/Slack incoming webhook for health alerts |
 
    **Repository variable** (same page, *Variables* tab): `MONITOR_URL` = public `/health` URL of your deployment (optional).
@@ -113,8 +119,32 @@ docker compose logs -f monitor
 4. **Let the agent open PRs**: *Settings → Actions → General → Workflow permissions →* tick **Allow GitHub Actions to create and approve pull requests**.
 5. **Protect `main`**: *Settings → Branches → Add rule* for `main`: require a pull request with 1 approval, and require the status checks *Stage 1* and *Stage 2*. This is what enforces the human-in-the-loop boundary.
 
-### Optional: real cloud deployment on Render (free tier)
-New → Web Service → *Deploy an existing image* → `docker.io/<you>/securenotes:latest`, port 5000, env `APP_SECRET_KEY`. Copy the service's **Deploy Hook** into the `DEPLOY_HOOK_URL` secret and set `MONITOR_URL` to `https://<service>.onrender.com/health`. The deploy job then redeploys after every publish and waits for `/health`; the scheduled monitor watches the live URL.
+## Azure (production hosting and monitoring)
+
+Everything is created by Terraform in `infra/` (resource group `rg-securenotes`, Central India):
+
+| Resource | Purpose |
+|---|---|
+| Container Apps environment + Container App `securenotes` | runs the Docker Hub image, HTTPS URL, liveness/readiness probes on `/health` (self-healing), 1 replica |
+| Log Analytics workspace (1 GB/day cap) | container and application logs |
+| Application Insights | requests, response times, failures, Live Metrics, `notes_created` metric |
+| Workbook "SecureNotes - Operations Dashboard" | the dashboard, defined as code (KQL panels) |
+| Standard availability test | Azure calls `/health` from Singapore and Hong Kong every 5 minutes |
+| Action group + 2 metric alerts | email the team when the app is down or returns > 20 failed requests in 5 min |
+| Budget ($10/month) | cost warning emails at 80% and 100% |
+| Managed identity + federated credential + role assignment | GitHub's `production` deploy job logs in with OIDC; Contributor on this resource group only |
+
+```bash
+cd infra
+cp terraform.tfvars.example secrets.auto.tfvars   # paste a read-only Docker Hub token (git-ignored)
+az login
+terraform init
+terraform apply                                    # ~6 minutes, prints the URLs and the 3 GitHub secret values
+terraform output github_secrets                    # add these as GitHub repository secrets
+terraform destroy                                  # removes everything (cost back to $0)
+```
+
+Load the dashboard with traffic: `python scripts/load_test.py --url <app_url> --duration 60 --workers 5`.
 
 ## Demo script (≈10 minutes)
 
@@ -127,7 +157,9 @@ New → Web Service → *Deploy an existing image* → `docker.io/<you>/secureno
 | 5 | Merge the image PR | all stages ✅, image on Docker Hub, deploy job verifies `/health` |
 | 6 | `docker compose up -d`, `docker compose logs -f monitor` | HEALTHY checks every 10 s |
 | 7 | `docker compose stop securenotes` | UNHEALTHY + alert; `start` → RECOVERED |
-| 8 | Actions → *Scheduled Health Monitor* → Run with **simulate_outage** | failed run + 🚨 issue; run again normally → issue auto-closed |
+| 8 | Open the live Azure URL on a phone; add a note | real cloud deployment |
+| 9 | Azure portal → Application Insights → **Live Metrics**; run `scripts/load_test.py` | graphs jump live; then show the **Operations Dashboard** workbook |
+| 10 | Container App → **Stop** | availability test fails → "SecureNotes down" email within ~5–10 min; **Start** → alert resolves |
 
 Shorter variants: `agent-secret-only` (only the secret fix) or `agent-image-only` (only the base-image fix). To start over: `./scripts/reset-demo.sh vulnerable` (or `fixed`).
 

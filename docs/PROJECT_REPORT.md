@@ -58,47 +58,70 @@ it. Its body contains the explanation, a table of the findings addressed, the ch
 a checklist for the reviewer. The agent does not open a second pull request for a mode while an
 earlier one is still open.
 
-## 6.6 Deployment and verification
+## 6.6 Cloud deployment on Microsoft Azure
 
-When Stage 3 has pushed `username/securenotes:<sha>`, the deploy job delivers it. If a
-`DEPLOY_HOOK_URL` secret and a `MONITOR_URL` variable are set, the job calls the hook of a cloud
-host (for example Render, which runs the Docker Hub image) and polls the public `/health` URL until
-the new version answers. Without them, the job pulls the published image onto the runner and starts
-it as a staging container. Either way the release is accepted only after `monitor/health_check.py`
-reports it healthy, so a broken image fails the run instead of failing in production. Stage 2 also
-runs the same health check against the locally built image before the image is published.
+The application runs on **Azure Container Apps** in the Central India region. Every Azure resource
+is described in Terraform (`infra/`), so the environment can be created with `terraform apply`
+and removed with `terraform destroy`; nothing is configured by hand in the portal (Table 14).
 
-## 6.7 Continuous health monitoring
+**Table 14: Azure resources (resource group `rg-securenotes`)**
 
-`monitor/health_check.py` probes `/health` and applies four checks:
+| Resource | Role |
+|---|---|
+| Container Apps environment and Container App | runs the published Docker image behind an HTTPS URL, one replica, liveness and readiness probes on `/health` |
+| Log Analytics workspace | stores container and application logs, capped at 1 GB per day |
+| Application Insights | receives request, failure, response-time and custom-metric telemetry, and Live Metrics |
+| Azure Monitor workbook | the operations dashboard, defined as code |
+| Standard availability test | requests `/health` from Singapore and Hong Kong every five minutes |
+| Action group and two metric alerts | email both team members when the app is unavailable or returns more than 20 failed requests in five minutes |
+| Consumption budget | sends cost warnings at 80% and 100% of USD 10 per month |
+| User-assigned managed identity, federated credential, role assignment | lets the pipeline deploy without a stored password |
 
-| Check | Pass | Warning | Fail |
-|---|---|---|---|
-| Connectivity | response received | — | connection refused, DNS error, timeout |
-| HTTP status | 200 | — | anything else |
-| Response time | ≤ 500 ms | ≤ 1000 ms | > 1000 ms |
-| Response body | `{"status": "healthy"}` | — | other value or non-JSON |
+**Keyless deployment.** The deploy job runs in the GitHub `production` environment and requests an
+OpenID Connect token from GitHub. Azure accepts the token only for the subject
+`repo:StarkFurry64/SecureNotes_Devops_Miniproject:environment:production` and exchanges it for a
+short-lived credential of the managed identity. That identity holds the Contributor role on this one
+resource group and nothing else. No Azure password or key is stored in GitHub.
 
-A failure is retried twice before the service is declared down. Every result is appended to a CSV
-history file, and availability (the share of checks that were not unhealthy) and the average
-response time are calculated from that file. Alerts are sent to a Discord or Slack webhook when the
-service goes down and again when it recovers, not on every check.
+**Release flow.** After Stage 3 publishes `tanish15/securenotes:<commit SHA>`, the deploy job runs
+`az containerapp update` with that image. Container Apps starts a new revision, named after the
+pipeline run, and moves all traffic to it once the readiness probe passes. The job then calls the
+public `/health` endpoint with the project's health monitor and accepts the release only when it
+reports healthy. The environment URL is linked from the GitHub run.
 
-The monitor runs in three places:
+**Images.** The Container App pulls from Docker Hub with a read-only token, because anonymous pulls
+from shared cloud addresses are rate limited. Terraform creates the app once; later image changes come
+only from the pipeline, which is why Terraform ignores the image field.
 
-- **Locally:** the `monitor` service in `docker-compose.yml` checks the app container every 10 seconds.
-  Stopping the app container shows failure detection, and starting it again shows recovery.
-- **In the pipeline:** the smoke test in Stage 2 and the verification in the deploy job.
-- **On a schedule:** `.github/workflows/health-monitor.yml` runs every 15 minutes against `MONITOR_URL`,
-  or against a staging container when no public deployment exists. The history is kept between runs
-  in the Actions cache. An unhealthy result opens a GitHub issue labelled `health-alert`, or comments
-  on the open one. The next healthy result closes the issue, so the issues form an incident log.
-  The `simulate_outage` input stops the container before the check, for demonstrations.
+## 6.7 Monitoring and alerting
+
+The application sends OpenTelemetry data to Application Insights through the Azure Monitor
+distribution. Telemetry is switched on only when the connection string is present, so local runs and
+tests send nothing, and the vulnerable demonstration image (Python 3.8) runs without it. Requests to
+`/health` are excluded so that probe traffic does not hide real usage. Every request is recorded
+(sampling is set to 100%), and the application counts created notes as a business metric.
+
+The operations dashboard shows requests per minute, average and 95th-percentile response time,
+failed requests by status code, availability per test location, notes created, and a one-hour
+summary. Live Metrics shows the same signals with about one second of delay and is the view used in
+the demonstration, together with `scripts/load_test.py`, which mixes page views, note creation and
+deliberate 404 responses.
+
+Monitoring works at three levels:
+
+- **Inside the platform.** Container Apps restarts the container when the liveness probe fails.
+- **From outside, by Azure.** The availability test fails when `/health` does not return
+  `"healthy"`, which fires the "app down" alert and emails the team. The alert resolves itself when
+  the test passes again.
+- **From outside, by the project.** `monitor/health_check.py` checks connectivity, status code,
+  response time and body content. It runs in the pipeline after every deployment, in
+  `docker-compose.yml` for local demonstrations, and on a 15-minute schedule in GitHub Actions,
+  where an outage opens an issue and recovery closes it.
 
 ## 6.8 Testing
 
-Stage 1 lints the code with ruff, then runs 68 test cases in four files under `coverage`. The coverage
-report is uploaded to SonarCloud. Line coverage is 97% (app 97%, monitor 96%, agent 98%, scanner 95%),
+Stage 1 lints the code with ruff, then runs 77 test cases in four files under `coverage`. The coverage
+report is uploaded to SonarCloud. Line coverage is 98% (app 100%, monitor 97%, agent 98%, scanner 97%),
 which is above the 80% that SonarCloud's default quality gate requires for new code.
 
 **Table 9: Test cases**
@@ -136,7 +159,8 @@ which is above the 80% that SonarCloud's default quality gate requires for new c
 | Container breakout impact | image runs as unprivileged `appuser` (uid 10001); only the app's files are copied in |
 | Cross-site request forgery, clickjacking | per-session CSRF token checked on every POST; `SameSite=Lax` cookie; CSP and `X-Frame-Options: DENY` |
 | Broken release reaching users | Stage 2 smoke test; deploy job accepts a release only after `/health` passes |
-| Unnoticed outage | scheduled monitor, incident issues, webhook alerts |
+| Unnoticed outage | Azure availability test and email alerts, probes that restart the container, scheduled GitHub monitor |
+| Leaked cloud credentials | OIDC federation: no Azure secret in GitHub; deploy identity limited to one resource group |
 
 ## 6.10 Limitations
 
