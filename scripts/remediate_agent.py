@@ -38,7 +38,7 @@ from secret_scan import scan_paths, scan_text  # noqa: E402
 NIM_URL = os.environ.get("NVIDIA_NIM_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
 DEFAULT_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
 SONAR_URL = os.environ.get("SONAR_HOST_URL", "https://sonarcloud.io")
-DEFAULT_SONAR_KEY = "Siddhantshukla1657_SecureNotes_Devops_Miniproject"
+DEFAULT_SONAR_KEY = "StarkFurry64_SecureNotes_Devops_Miniproject"
 
 # The only files the agent may modify. Workflows, scripts and tests are deliberately
 # excluded so that a manipulated model response cannot weaken the pipeline itself.
