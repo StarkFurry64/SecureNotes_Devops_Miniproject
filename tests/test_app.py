@@ -56,6 +56,13 @@ def test_add_note_rejects_invalid_input(client, bad_text):
     assert securenotes.get_notes() == []
 
 
+def test_add_note_without_text_field_is_rejected(client):
+    response = client.post("/add", data={}, follow_redirects=True)
+    assert response.status_code == 200
+    assert b"Input is missing." in response.data
+    assert securenotes.get_notes() == []
+
+
 def test_delete_note_removes_it(client):
     client.post("/add", data={"text": "to delete"})
     note_id = securenotes.get_notes()[0]["id"]

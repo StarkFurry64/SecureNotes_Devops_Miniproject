@@ -133,16 +133,35 @@ def test_fixed_code_needs_no_patch(monkeypatch, tmp_path, capsys):
     assert code == 0 and "nothing to do" in capsys.readouterr().out
 
 
-def test_forced_mode_without_fixable_issue_fails(monkeypatch, tmp_path):
+def test_gate_failure_the_agent_cannot_fix_is_reported_not_failed(monkeypatch, tmp_path):
     for name in ("app.py", "Dockerfile"):
         shutil.copy(os.path.join(STATES, "fixed", name), tmp_path / name)
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.delenv("SONAR_TOKEN", raising=False)
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     code = agent.main(["--repo-root", str(tmp_path), "--mode", "secret", "--trivy-report", "none.json",
                        "--secret-report", "none.json"])
-    assert code == 1 and "No acceptable patch" in summary.read_text()
+    assert code == 0 and "does not fix automatically" in summary.read_text()
+
+
+def test_unfixable_secret_finding_still_fails(monkeypatch, tmp_path):
+    for name in ("app.py", "Dockerfile"):
+        shutil.copy(os.path.join(STATES, "fixed", name), tmp_path / name)
+    report = tmp_path / "secrets.json"
+    report.write_text(json.dumps([{"source": "secret-scan", "rule": "hardcoded-credential", "file": "app.py",
+                                   "line": 1, "severity": "CRITICAL", "message": "secret"}]))
+    code = agent.main(["--repo-root", str(tmp_path), "--mode", "secret", "--trivy-report", "none.json",
+                       "--secret-report", str(report)])
+    assert code == 1
+
+
+@pytest.mark.parametrize("mode, finding, expected", [
+    ("secret", {"source": "sonarcloud", "rule": "python:S6779"}, True),
+    ("secret", {"source": "sonarcloud", "rule": "python:S1192"}, False),
+    ("image", {"source": "trivy", "rule": "CVE-1"}, True),
+    ("secret", {"source": "trivy", "rule": "CVE-1"}, False),
+])
+def test_has_fixable_finding(mode, finding, expected):
+    assert agent.has_fixable_finding(mode, [finding]) is expected
 
 
 # ------------------------------------------------------------------ GitHub pull request

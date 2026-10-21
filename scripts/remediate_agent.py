@@ -175,6 +175,18 @@ def resolve_mode(requested, findings):
     return None
 
 
+def has_fixable_finding(mode, findings):
+    """True when a finding is of a kind the agent knows how to patch: a secret or an image CVE."""
+    secret_rules = ("hardcoded-credential", "S2068", "S6418", "S6779", "S6702", "S6706")
+    for finding in findings:
+        if finding["source"] == "trivy" and mode in ("image", "all"):
+            return True
+        if finding["source"] != "trivy" and mode in ("secret", "all") and any(
+                rule in str(finding.get("rule")) for rule in secret_rules):
+            return True
+    return False
+
+
 def relevant_findings(mode, findings):
     """Keep only findings the agent can act on: the right gate, in a file this mode may change."""
     files = set(MODE_FILES[mode])
@@ -488,6 +500,15 @@ def main(argv=None):
 
     proposal, original, generator = generate_patch(args, mode, scoped)
     if proposal is None:
+        if not has_fixable_finding(mode, scoped):
+            # The gate failed for a reason the agent does not patch (e.g. coverage or a code smell).
+            print("[agent] no secret or image finding to fix - leaving this to a developer")
+            write_step_summary(
+                f"### 🤖 Remediation agent ({mode})\n"
+                "ℹ️ The gate failed for a reason the agent does not fix automatically "
+                "(for example test coverage or a code smell). Open the SonarCloud report for details."
+            )
+            return 0
         write_step_summary(f"### 🤖 Remediation agent ({mode})\n❌ No acceptable patch could be produced.")
         return 1
 

@@ -309,6 +309,7 @@ jobs:
           name: secret-findings
 
       - name: Download Trivy report
+        if: needs.build-and-scan.result != 'skipped'
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:

@@ -34,7 +34,7 @@ SECURITY_HEADERS = {
     ),
 }
 
-app = Flask(__name__)
+app = Flask(__name__)  # NOSONAR(S4502): CSRF is enforced for every POST by verify_csrf_token() below
 # DEMO DEFECT: credentials hardcoded in source (SonarCloud python:S6779 / S2068).
 app.config["SECRET_KEY"] = "sn-prod-8f3k2LmQ9xZt7Wv1"
 DB_PASSWORD = "SuperSecret@123"
@@ -92,7 +92,7 @@ def index():
 def add_note():
     # DEMO DEFECT: validation duplicated inline in each route (code smell).
     raw = request.form.get("text")
-    if raw is None or not isinstance(raw, str):
+    if raw is None:
         flash("Input is missing.", "error")
         return redirect(url_for("index"))
     text = raw.strip()
@@ -120,14 +120,7 @@ def add_note():
 @app.route("/delete/<note_id>", methods=["POST"])
 def delete_note(note_id):
     # DEMO DEFECT: the same validation copied again.
-    raw = note_id
-    if raw is None or not isinstance(raw, str):
-        flash("Input is missing.", "error")
-        return redirect(url_for("index"))
-    cleaned_id = raw.strip()
-    if not cleaned_id:
-        flash("Input cannot be empty.", "error")
-        return redirect(url_for("index"))
+    cleaned_id = note_id.strip()
     if not NOTE_ID_PATTERN.match(cleaned_id):
         flash("Invalid note id.", "error")
         return redirect(url_for("index"))
