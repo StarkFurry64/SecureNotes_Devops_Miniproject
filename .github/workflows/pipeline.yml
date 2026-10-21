@@ -184,7 +184,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       pushed: ${{ steps.push.outputs.pushed }}
-      image: ${{ steps.push.outputs.image }}
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -222,7 +221,6 @@ jobs:
         run: |
           if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
             echo "pushed=true" >> "$GITHUB_OUTPUT"
-            echo "image=$DOCKERHUB_USERNAME/securenotes:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
             echo "### 📦 Published \`$DOCKERHUB_USERNAME/securenotes:$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "pushed=false" >> "$GITHUB_OUTPUT"
@@ -238,7 +236,9 @@ jobs:
     env:
       DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
       MONITOR_URL: ${{ vars.MONITOR_URL }}
-      IMAGE: ${{ needs.publish.outputs.image }}
+      # Built here rather than passed from the publish job: GitHub blanks job outputs that
+      # contain a secret, and the image name contains the Docker Hub username secret.
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/securenotes:${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
