@@ -17,6 +17,11 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
 
+try:
+    from opentelemetry import metrics as otel_metrics
+except ImportError:  # pragma: no cover - images built without the Azure telemetry packages (Python < 3.10)
+    otel_metrics = None
+
 load_dotenv()
 
 SERVICE_NAME = "securenotes"
@@ -42,6 +47,36 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 _notes = []
 _notes_lock = threading.Lock()
+
+# Business metric shown on the Azure dashboard. Until telemetry is configured this is a no-op.
+NOTES_CREATED = (
+    otel_metrics.get_meter(SERVICE_NAME).create_counter("notes_created", unit="1", description="Notes added")
+    if otel_metrics
+    else None
+)
+
+
+def setup_telemetry(flask_app, configure=None, instrument=None):
+    """Send requests, failures and Live Metrics to Azure Application Insights.
+
+    Active only when APPLICATIONINSIGHTS_CONNECTION_STRING is set (it is on Azure Container Apps),
+    so local runs and tests send nothing. Returns True when telemetry was switched on.
+    """
+    if not os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+        return False
+    if configure is None:  # pragma: no cover - exercised on Azure, replaced by a fake in tests
+        from azure.monitor.opentelemetry import configure_azure_monitor as configure
+    if instrument is None:  # pragma: no cover - exercised on Azure, replaced by a fake in tests
+        from opentelemetry.instrumentation.flask import FlaskInstrumentor
+
+        instrument = FlaskInstrumentor().instrument_app
+    configure(enable_live_metrics=True, instrumentation_options={"flask": {"enabled": False}})
+    # /health is polled by probes and availability tests; leaving it out keeps the dashboard readable.
+    instrument(flask_app, excluded_urls="health")
+    return True
+
+
+setup_telemetry(app)
 
 
 def csrf_token():
@@ -113,6 +148,8 @@ def add_note():
     }
     with _notes_lock:
         _notes.insert(0, note)
+    if NOTES_CREATED:
+        NOTES_CREATED.add(1)
     flash("Note added.", "success")
     return redirect(url_for("index"))
 

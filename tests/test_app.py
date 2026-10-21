@@ -103,3 +103,23 @@ def test_security_headers_are_set(client):
     assert response.headers["X-Frame-Options"] == "DENY"
     assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
     assert b'name="csrf_token"' in response.data
+
+
+def test_telemetry_is_off_without_connection_string(monkeypatch):
+    monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
+    assert securenotes.setup_telemetry(securenotes.app) is False
+
+
+def test_telemetry_is_configured_with_connection_string(monkeypatch):
+    monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=test")
+    calls = {}
+
+    def fake_configure(**kwargs):
+        calls["configure"] = kwargs
+
+    def fake_instrument(flask_app, **kwargs):
+        calls["instrument"] = (flask_app, kwargs)
+
+    assert securenotes.setup_telemetry(securenotes.app, configure=fake_configure, instrument=fake_instrument)
+    assert calls["configure"]["enable_live_metrics"] is True
+    assert calls["instrument"] == (securenotes.app, {"excluded_urls": "health"})

@@ -121,3 +121,15 @@ def test_main_exit_codes(tmp_path, live_server):
     assert hc.main(["--url", "http://127.0.0.1:9/health", "--history", history,
                     "--retries", "0", "--timeout", "1"]) == 1
     assert hc.main(["--report", "--history", history]) == 0
+
+
+def test_load_test_generates_mixed_traffic(live_server, capsys):
+    import load_test
+
+    securenotes.clear_notes()
+    assert load_test.main(["--url", live_server, "--duration", "1", "--workers", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "home page -> 200" in out
+    assert "404 page -> 404" in out
+    assert securenotes.get_notes()  # notes were really created through the CSRF-protected form
+    securenotes.clear_notes()

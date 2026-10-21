@@ -1,0 +1,3 @@
+# Copy to secrets.auto.tfvars (git-ignored) and paste a READ-ONLY Docker Hub token.
+# Docker Hub -> Account settings -> Personal access tokens -> Access permissions: Public Repo Read-only
+dockerhub_token = "dckr_pat_..."

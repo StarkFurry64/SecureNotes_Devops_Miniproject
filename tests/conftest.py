@@ -16,5 +16,6 @@ def isolate_from_ci_environment(monkeypatch):
     Tests that need one of these variables set it themselves with monkeypatch.setenv.
     """
     for name in ("GITHUB_STEP_SUMMARY", "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID",
-                 "SONAR_TOKEN", "NVIDIA_API_KEY", "ALERT_WEBHOOK_URL"):
+                 "SONAR_TOKEN", "NVIDIA_API_KEY", "ALERT_WEBHOOK_URL",
+                 "APPLICATIONINSIGHTS_CONNECTION_STRING"):
         monkeypatch.delenv(name, raising=False)

@@ -232,10 +232,17 @@ jobs:
     needs: publish
     if: needs.publish.outputs.pushed == 'true'
     runs-on: ubuntu-24.04
-    environment: production
+    # Only this job may ask Azure for a token (OIDC); no Azure password is stored in GitHub.
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: ${{ steps.azure.outputs.url }}
     env:
-      DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
-      MONITOR_URL: ${{ vars.MONITOR_URL }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_RESOURCE_GROUP: rg-securenotes
+      AZURE_CONTAINER_APP: securenotes
       # Built here rather than passed from the publish job: GitHub blanks job outputs that
       # contain a secret, and the image name contains the Docker Hub username secret.
       IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/securenotes:${{ github.sha }}
@@ -251,18 +258,36 @@ jobs:
       - name: Install monitor dependencies
         run: pip install requests
 
-      # Option A: a cloud host (e.g. Render) that redeploys the Docker Hub image from a deploy hook.
-      - name: Trigger cloud deployment
-        if: env.DEPLOY_HOOK_URL != '' && env.MONITOR_URL != ''
-        run: |
-          curl -fsS -X POST "$DEPLOY_HOOK_URL" > /dev/null
-          echo "Deployment triggered; waiting for $MONITOR_URL to report healthy..."
-          python monitor/health_check.py --url "$MONITOR_URL" --timeout 15 --fail-ms 5000 \
-            --retries 30 --retry-delay 10 --history "$RUNNER_TEMP/deploy-history.csv"
+      # Production: Azure Container Apps (set up by infra/ with Terraform).
+      - name: Log in to Azure with OIDC
+        if: env.AZURE_CLIENT_ID != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Option B (default): deploy the published image to a staging container on the runner.
+      - name: Deploy to Azure Container Apps
+        id: azure
+        if: env.AZURE_CLIENT_ID != ''
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
+          az containerapp update \
+            --name "$AZURE_CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "docker.io/$IMAGE" \
+            --revision-suffix "r${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}" \
+            --only-show-errors --output none
+          FQDN=$(az containerapp show --name "$AZURE_CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn --output tsv)
+          echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+          echo "Deployed; waiting for https://$FQDN/health to report healthy..."
+          python monitor/health_check.py --url "https://$FQDN/health" --timeout 15 --fail-ms 5000 \
+            --retries 20 --retry-delay 6 --history "$RUNNER_TEMP/deploy-history.csv"
+          echo "### 🚀 Live on Azure: https://$FQDN (revision r${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT})" >> "$GITHUB_STEP_SUMMARY"
+
+      # Fallback without Azure: deploy the published image to a staging container on the runner.
       - name: Deploy published image to staging container
-        if: env.DEPLOY_HOOK_URL == '' || env.MONITOR_URL == ''
+        if: env.AZURE_CLIENT_ID == ''
         run: |
           docker pull "$IMAGE"
           docker run -d --name securenotes-staging -p 5000:5000 \
@@ -272,7 +297,7 @@ jobs:
           echo "### 🚀 Deployed \`$IMAGE\` to staging and verified \`/health\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Staging logs on failure
-        if: failure()
+        if: failure() && env.AZURE_CLIENT_ID == ''
         run: docker logs securenotes-staging || true
 
   # ---------------------------------------------------------------- Stage 4
