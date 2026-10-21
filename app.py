@@ -36,8 +36,8 @@ SECURITY_HEADERS = {
 
 app = Flask(__name__)  # NOSONAR(S4502): CSRF is enforced for every POST by verify_csrf_token() below
 # DEMO DEFECT: credentials hardcoded in source (SonarCloud python:S6779 / S2068).
-app.config["SECRET_KEY"] = "sn-prod-8f3k2LmQ9xZt7Wv1"
-DB_PASSWORD = "SuperSecret@123"
+app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "default-dev-key")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 _notes = []
